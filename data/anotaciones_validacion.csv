@@ -1,0 +1,5 @@
+doctor_id,case_id,pregunta,respuesta_modelo,correcta,comentarios,timestamp
+usuario_001,1,¿Cuál es el diagnóstico principal del paciente?,diabetes mellitus tipo 2,1,,2025-11-18T11:02:55.835031
+usuario_001,2,¿Cuál es la comorbilidad más importante del paciente?,hipertensión arterial sistémica,1,,2025-11-18T11:03:12.926435
+usuario_001,3,¿Cuál es la enfermedad respiratoria crónica del paciente?,enfermedad pulmonar obstructiva crónica,1,Agregar que es causao por fumar,2025-11-18T11:04:06.959856
+usuario_001,4,¿Cuál es la principal enfermedad renal del paciente?,insuficiencia renal crónica,1,,2025-11-18T11:10:48.005571
