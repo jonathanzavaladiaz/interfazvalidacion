@@ -15,8 +15,122 @@ from cryptography.hazmat.backends import default_backend
 # ============================
 
 ENC_CASES_PATH = "data/cliberto_qa_evalset_anon_992.enc"
-ANNOTATIONS_PATH = "data/anotaciones_validacion.csv"
-USERS_PATH = "data/usuarios.csv"
+ENC_USERS_PATH = "data/usuarios.enc"
+ENC_ANNOTATIONS_PATH = "data/anotaciones.enc"
+
+
+# ============================
+#    CIFRADO / DESCIFRADO
+# ============================
+
+def derive_key(password: str, salt: bytes) -> bytes:
+    """Deriva una llave simétrica segura a partir de la contraseña y el salt."""
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=salt,
+        iterations=390000,
+        backend=default_backend(),
+    )
+    return base64.urlsafe_b64encode(kdf.derive(password.encode("utf-8")))
+
+
+def decrypt_cases_from_file(password: str):
+    """
+    Desencripta el archivo .enc con la contraseña
+    y regresa un DataFrame leído desde el XLSX original,
+    adaptando columnas y calculando dificultad.
+    """
+    if not os.path.exists(ENC_CASES_PATH):
+        raise FileNotFoundError(f"No se encontró el archivo encriptado: {ENC_CASES_PATH}")
+
+    with open(ENC_CASES_PATH, "rb") as f:
+        raw = f.read()
+
+    salt = raw[:16]
+    token = raw[16:]
+
+    key = derive_key(password, salt)
+    fernet = Fernet(key)
+
+    try:
+        decrypted = fernet.decrypt(token)
+    except InvalidToken:
+        return None
+
+    buffer = io.BytesIO(decrypted)
+    df = pd.read_excel(buffer)
+
+    # Renombrar columnas del dataset nuevo a las esperadas por la app
+    df = df.rename(columns={
+        "id": "case_id",
+        "context_anon": "nota_clinica",
+        "question_anon": "pregunta",
+        "pred_answer_anon": "respuesta_modelo",
+        "pred_start": "answer_start",
+        "pred_end": "answer_end",
+    })
+
+    # Clasificar dificultad según EM y F1
+    def clasificar_dificultad(row):
+        EM = row.get("EM", 0)
+        F1 = row.get("F1", 0)
+
+        try:
+            EM = float(EM)
+            F1 = float(F1)
+        except Exception:
+            EM = 0
+            F1 = 0
+
+        if EM == 1 and F1 == 1:
+            return "Sencilla"
+        elif EM == 0 and F1 > 0:
+            return "Moderada"
+        else:
+            return "Difícil"
+
+    df["dificultad"] = df.apply(clasificar_dificultad, axis=1)
+
+    return df
+
+
+def decrypt_csv(password: str, path: str):
+    """Desencripta un CSV .enc y lo regresa como DataFrame."""
+    if not os.path.exists(path):
+        return pd.DataFrame()
+
+    with open(path, "rb") as f:
+        raw = f.read()
+
+    salt = raw[:16]
+    token = raw[16:]
+
+    key = derive_key(password, salt)
+    fernet = Fernet(key)
+
+    try:
+        decrypted = fernet.decrypt(token)
+    except InvalidToken:
+        return None
+
+    buffer = io.BytesIO(decrypted)
+    df = pd.read_csv(buffer)
+    return df
+
+
+def encrypt_csv(df: pd.DataFrame, password: str, path: str):
+    """Cifra un DataFrame como CSV en un archivo .enc."""
+    csv_bytes = df.to_csv(index=False).encode("utf-8")
+
+    salt = os.urandom(16)
+    key = derive_key(password, salt)
+    fernet = Fernet(key)
+
+    token = fernet.encrypt(csv_bytes)
+
+    with open(path, "wb") as f:
+        f.write(salt + token)
 
 
 # ============================
@@ -31,23 +145,16 @@ def load_cases():
     return st.session_state["cases_df"]
 
 
-def load_annotations():
-    """Carga o crea el archivo de anotaciones."""
-    if os.path.exists(ANNOTATIONS_PATH):
-        return pd.read_csv(ANNOTATIONS_PATH)
-    else:
-        return pd.DataFrame(columns=[
-            "doctor_id", "case_id", "pregunta",
-            "respuesta_modelo", "correcta",
-            "comentarios", "timestamp"
-        ])
-
-
 def load_users():
-    """Carga o crea el archivo de usuarios."""
-    if os.path.exists(USERS_PATH):
-        return pd.read_csv(USERS_PATH)
-    else:
+    """Carga usuarios desde usuarios.enc o crea estructura vacía."""
+    pwd = st.session_state["dataset_password"]
+
+    df = decrypt_csv(pwd, ENC_USERS_PATH)
+    if df is None:
+        st.error("No se pudo descifrar usuarios. Contraseña incorrecta.")
+        st.stop()
+
+    if df.empty:
         return pd.DataFrame(columns=[
             "doctor_id", "password",
             "nombre", "apellido_paterno", "apellido_materno",
@@ -55,10 +162,32 @@ def load_users():
             "cedula", "edad", "institucion"
         ])
 
+    return df
+
 
 def save_users(df_users):
-    """Guarda el DataFrame de usuarios en disco."""
-    df_users.to_csv(USERS_PATH, index=False)
+    """Guarda usuarios encriptados en usuarios.enc."""
+    pwd = st.session_state["dataset_password"]
+    encrypt_csv(df_users, pwd, ENC_USERS_PATH)
+
+
+def load_annotations():
+    """Carga anotaciones desde anotaciones.enc o crea estructura vacía."""
+    pwd = st.session_state["dataset_password"]
+
+    df = decrypt_csv(pwd, ENC_ANNOTATIONS_PATH)
+    if df is None:
+        st.error("No se pudo descifrar anotaciones. Contraseña incorrecta.")
+        st.stop()
+
+    if df.empty:
+        return pd.DataFrame(columns=[
+            "doctor_id", "case_id", "pregunta",
+            "respuesta_modelo", "correcta",
+            "comentarios", "timestamp"
+        ])
+
+    return df
 
 
 # ============================
@@ -113,87 +242,6 @@ def calcular_siguiente_caso(doctor_id, cases, annotations):
 
 
 # ============================
-#    CIFRADO / DESCIFRADO
-# ============================
-
-def derive_key(password: str, salt: bytes) -> bytes:
-    """Deriva una llave simétrica segura a partir de la contraseña y el salt."""
-    kdf = PBKDF2HMAC(
-        algorithm=hashes.SHA256(),
-        length=32,
-        salt=salt,
-        iterations=390000,
-        backend=default_backend(),
-    )
-    return base64.urlsafe_b64encode(kdf.derive(password.encode("utf-8")))
-
-
-def decrypt_cases_from_file(password: str):
-    """
-    Desencripta el archivo .enc con la contraseña
-    y regresa un DataFrame leído desde el XLSX original,
-    adaptando columnas y calculando dificultad.
-    """
-    if not os.path.exists(ENC_CASES_PATH):
-        raise FileNotFoundError(f"No se encontró el archivo encriptado: {ENC_CASES_PATH}")
-
-    with open(ENC_CASES_PATH, "rb") as f:
-        raw = f.read()
-
-    # salt = primeros 16 bytes, token = el resto
-    salt = raw[:16]
-    token = raw[16:]
-
-    key = derive_key(password, salt)
-    fernet = Fernet(key)
-
-    try:
-        decrypted = fernet.decrypt(token)
-    except InvalidToken:
-        # Contraseña incorrecta
-        return None
-
-    # decrypted son los bytes del XLSX original
-    buffer = io.BytesIO(decrypted)
-    df = pd.read_excel(buffer)
-
-    # Renombrar columnas del dataset nuevo a las esperadas por la app
-    df = df.rename(columns={
-        "id": "case_id",
-        "context_anon": "nota_clinica",
-        "question_anon": "pregunta",
-        "pred_answer_anon": "respuesta_modelo",
-        "pred_start": "answer_start",
-        "pred_end": "answer_end",
-    })
-
-    # Clasificar dificultad según EM y F1
-    def clasificar_dificultad(row):
-        EM = row.get("EM", 0)
-        F1 = row.get("F1", 0)
-
-        try:
-            # por si vienen como string
-            EM = float(EM)
-            F1 = float(F1)
-        except Exception:
-            EM = 0
-            F1 = 0
-
-        if EM == 1 and F1 == 1:
-            return "Sencilla"
-        elif EM == 0 and F1 > 0:
-            return "Moderada"
-        else:
-            # EM = 0 y F1 = 0 (o valores raros)
-            return "Difícil"
-
-    df["dificultad"] = df.apply(clasificar_dificultad, axis=1)
-
-    return df
-
-
-# ============================
 #           APP
 # ============================
 
@@ -223,12 +271,11 @@ def main():
             st.error("Contraseña incorrecta para el dataset.")
             st.stop()
 
-        # Guardamos en sesión para no estar desencriptando cada rato
         st.session_state["dataset_password"] = pwd
         st.session_state["dataset_password_ok"] = True
         st.session_state["cases_df"] = df_test
 
-    # Dataset ya cargado en sesión
+    # Dataset y CSVs cifrados ya listos
     cases = load_cases()
     total_cases = len(cases)
     annotations = load_annotations()
@@ -292,7 +339,6 @@ def main():
                 submitted = st.form_submit_button("Registrar y entrar")
 
                 if submitted:
-                    # Validaciones básicas
                     if not doctor_id.strip() or not password.strip():
                         st.error("Usuario y contraseña son obligatorios.")
                         return
@@ -312,12 +358,10 @@ def main():
 
                     doctor_id = doctor_id.strip()
 
-                    # Verificar que no exista ya ese usuario
                     if doctor_id in users["doctor_id"].astype(str).values:
                         st.error("Ese usuario ya existe. Usa otro ID o entra como 'Ya estoy registrado'.")
                         return
 
-                    # Crear nuevo registro
                     nuevo = pd.DataFrame([{
                         "doctor_id": doctor_id,
                         "password": password,
@@ -382,12 +426,11 @@ def main():
                     st.session_state["doctor_nombre"] = nombre_completo
                     st.session_state["finished"] = False
 
-                    # Calcular siguiente caso no revisado
                     next_idx = calcular_siguiente_caso(doctor_id, cases, annotations)
                     st.session_state["case_idx"] = next_idx
                     st.rerun()
 
-            return  # No seguir si aún no inició sesión
+            return
 
     # ============================
     #      SESIÓN INICIADA
@@ -395,15 +438,12 @@ def main():
     doctor_id = st.session_state["doctor_id"]
     doctor_nombre = st.session_state.get("doctor_nombre", "")
 
-    # Recargar anotaciones por si se actualizaron
     annotations = load_annotations()
 
-    # Sidebar con info de usuario y navegación
     st.sidebar.write(f"👨‍⚕️ Usuario: **{doctor_id}**")
     if doctor_nombre:
         st.sidebar.write(f"Nombre: {doctor_nombre}")
 
-    # Estadísticas del usuario
     casos_revisados, correctas, incorrectas = get_user_stats(
         doctor_id, annotations, total_cases
     )
@@ -413,13 +453,11 @@ def main():
     st.sidebar.write(f"Marcadas correctas: **{correctas}**")
     st.sidebar.write(f"Marcadas incorrectas: **{incorrectas}**")
 
-    # Botón Terminar
     terminar = st.sidebar.button("🚪 Terminar sesión", type="primary")
 
     if terminar:
         st.session_state["finished"] = True
 
-    # Si el médico “terminó”, mostrar resumen y opción de salir o volver
     if st.session_state.get("finished", False):
         st.subheader("Resumen de tu sesión de validación")
 
@@ -444,13 +482,12 @@ def main():
                         del st.session_state[key]
                 st.rerun()
 
-        return  # No mostrar la interfaz de casos si está en modo “Terminado”
+        return
 
     # ============================
     #    INTERFAZ DE VALIDACIÓN
     # ============================
 
-    # Índice del caso actual
     if "case_idx" not in st.session_state:
         st.session_state["case_idx"] = 0
 
@@ -493,13 +530,11 @@ def main():
         st.subheader("Respuesta del modelo")
         st.success(str(case["respuesta_modelo"]))
 
-        # Mostrar dificultad estimada
         dificultad = case.get("dificultad", "No disponible")
         st.markdown(f"**Dificultad estimada (EM/F1):** {dificultad}")
 
         st.markdown("---")
 
-        # Formulario de anotación
         with st.form("annotation_form"):
             correcta = st.radio(
                 "¿La respuesta del modelo es correcta?",
@@ -529,11 +564,16 @@ def main():
                     [annotations, pd.DataFrame([nueva_fila])],
                     ignore_index=True
                 )
-                annotations.to_csv(ANNOTATIONS_PATH, index=False)
+
+                # Guardar anotaciones encriptadas
+                encrypt_csv(
+                    annotations,
+                    st.session_state["dataset_password"],
+                    ENC_ANNOTATIONS_PATH
+                )
 
                 st.success("Respuesta registrada.")
 
-                # Ir al siguiente caso si existe
                 if idx < total_cases - 1:
                     st.session_state["case_idx"] = idx + 1
                 st.rerun()
