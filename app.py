@@ -2,18 +2,37 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 import os
+import io
+import base64
 
-CASES_PATH = "data/casos_qa.csv"
+from cryptography.fernet import Fernet, InvalidToken
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.backends import default_backend
+
+# ============================
+#       RUTAS DE ARCHIVOS
+# ============================
+
+ENC_CASES_PATH = "data/cliberto_qa_evalset_anon_992.enc"
 ANNOTATIONS_PATH = "data/anotaciones_validacion.csv"
 USERS_PATH = "data/usuarios.csv"
 
 
-@st.cache_data
+# ============================
+#       CARGA DE DATOS
+# ============================
+
 def load_cases():
-    return pd.read_csv(CASES_PATH)
+    """Devuelve el DataFrame de casos desde la sesión."""
+    if "cases_df" not in st.session_state:
+        st.error("El dataset no ha sido cargado en la sesión.")
+        st.stop()
+    return st.session_state["cases_df"]
 
 
 def load_annotations():
+    """Carga o crea el archivo de anotaciones."""
     if os.path.exists(ANNOTATIONS_PATH):
         return pd.read_csv(ANNOTATIONS_PATH)
     else:
@@ -25,6 +44,7 @@ def load_annotations():
 
 
 def load_users():
+    """Carga o crea el archivo de usuarios."""
     if os.path.exists(USERS_PATH):
         return pd.read_csv(USERS_PATH)
     else:
@@ -37,8 +57,13 @@ def load_users():
 
 
 def save_users(df_users):
+    """Guarda el DataFrame de usuarios en disco."""
     df_users.to_csv(USERS_PATH, index=False)
 
+
+# ============================
+#          UTILIDADES
+# ============================
 
 def highlight_span(text, start, end):
     """
@@ -64,6 +89,7 @@ def highlight_span(text, start, end):
 
 
 def get_user_stats(doctor_id, annotations, total_cases):
+    """Calcula estadísticas de anotaciones por usuario."""
     user_ann = annotations[annotations["doctor_id"] == doctor_id]
     casos_revisados = user_ann["case_id"].nunique()
     correctas = user_ann[user_ann["correcta"] == 1].shape[0]
@@ -72,6 +98,7 @@ def get_user_stats(doctor_id, annotations, total_cases):
 
 
 def calcular_siguiente_caso(doctor_id, cases, annotations):
+    """Devuelve el índice del siguiente caso no revisado por el usuario."""
     total_cases = len(cases)
     user_ann = annotations[annotations["doctor_id"] == doctor_id]
     revisados = set(user_ann["case_id"].unique())
@@ -85,10 +112,123 @@ def calcular_siguiente_caso(doctor_id, cases, annotations):
     return next_idx
 
 
+# ============================
+#    CIFRADO / DESCIFRADO
+# ============================
+
+def derive_key(password: str, salt: bytes) -> bytes:
+    """Deriva una llave simétrica segura a partir de la contraseña y el salt."""
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=salt,
+        iterations=390000,
+        backend=default_backend(),
+    )
+    return base64.urlsafe_b64encode(kdf.derive(password.encode("utf-8")))
+
+
+def decrypt_cases_from_file(password: str):
+    """
+    Desencripta el archivo .enc con la contraseña
+    y regresa un DataFrame leído desde el XLSX original,
+    adaptando columnas y calculando dificultad.
+    """
+    if not os.path.exists(ENC_CASES_PATH):
+        raise FileNotFoundError(f"No se encontró el archivo encriptado: {ENC_CASES_PATH}")
+
+    with open(ENC_CASES_PATH, "rb") as f:
+        raw = f.read()
+
+    # salt = primeros 16 bytes, token = el resto
+    salt = raw[:16]
+    token = raw[16:]
+
+    key = derive_key(password, salt)
+    fernet = Fernet(key)
+
+    try:
+        decrypted = fernet.decrypt(token)
+    except InvalidToken:
+        # Contraseña incorrecta
+        return None
+
+    # decrypted son los bytes del XLSX original
+    buffer = io.BytesIO(decrypted)
+    df = pd.read_excel(buffer)
+
+    # Renombrar columnas del dataset nuevo a las esperadas por la app
+    df = df.rename(columns={
+        "id": "case_id",
+        "context_anon": "nota_clinica",
+        "question_anon": "pregunta",
+        "pred_answer_anon": "respuesta_modelo",
+        "pred_start": "answer_start",
+        "pred_end": "answer_end",
+    })
+
+    # Clasificar dificultad según EM y F1
+    def clasificar_dificultad(row):
+        EM = row.get("EM", 0)
+        F1 = row.get("F1", 0)
+
+        try:
+            # por si vienen como string
+            EM = float(EM)
+            F1 = float(F1)
+        except Exception:
+            EM = 0
+            F1 = 0
+
+        if EM == 1 and F1 == 1:
+            return "Sencilla"
+        elif EM == 0 and F1 > 0:
+            return "Moderada"
+        else:
+            # EM = 0 y F1 = 0 (o valores raros)
+            return "Difícil"
+
+    df["dificultad"] = df.apply(clasificar_dificultad, axis=1)
+
+    return df
+
+
+# ============================
+#           APP
+# ============================
+
 def main():
     st.set_page_config(page_title="Validación QA Clínica", layout="wide")
     st.title("Interfaz de validación de respuestas clínicas")
 
+    # ============================
+    #   DESBLOQUEO DEL DATASET
+    # ============================
+    if "dataset_password_ok" not in st.session_state:
+        st.session_state["dataset_password_ok"] = False
+
+    if not st.session_state["dataset_password_ok"]:
+        st.subheader("Acceso al conjunto de casos clínicos")
+
+        with st.form("dataset_password_form"):
+            pwd = st.text_input("Contraseña del dataset", type="password")
+            submitted = st.form_submit_button("Desbloquear")
+
+        if not submitted:
+            st.info("Ingresa la contraseña del dataset para continuar.")
+            st.stop()
+
+        df_test = decrypt_cases_from_file(pwd)
+        if df_test is None:
+            st.error("Contraseña incorrecta para el dataset.")
+            st.stop()
+
+        # Guardamos en sesión para no estar desencriptando cada rato
+        st.session_state["dataset_password"] = pwd
+        st.session_state["dataset_password_ok"] = True
+        st.session_state["cases_df"] = df_test
+
+    # Dataset ya cargado en sesión
     cases = load_cases()
     total_cases = len(cases)
     annotations = load_annotations()
@@ -352,6 +492,10 @@ def main():
 
         st.subheader("Respuesta del modelo")
         st.success(str(case["respuesta_modelo"]))
+
+        # Mostrar dificultad estimada
+        dificultad = case.get("dificultad", "No disponible")
+        st.markdown(f"**Dificultad estimada (EM/F1):** {dificultad}")
 
         st.markdown("---")
 
