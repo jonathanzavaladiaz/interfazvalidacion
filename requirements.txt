@@ -2,3 +2,5 @@ streamlit==1.39.0
 pandas
 cryptography
 openpyxl
+sqlalchemy
+psycopg2-binary

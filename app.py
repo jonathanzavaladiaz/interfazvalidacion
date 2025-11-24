@@ -10,13 +10,29 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.backends import default_backend
 
+import sqlalchemy as sa
+
+# ============================
+#   CONEXIÓN A BASE DE DATOS
+# ============================
+
+@st.cache_resource
+def get_engine():
+    """
+    Crea y cachea el engine de SQLAlchemy usando la URL
+    definida en st.secrets["db"]["url"].
+    """
+    db_url = st.secrets["db"]["url"]
+    engine = sa.create_engine(db_url)
+    return engine
+
+
 # ============================
 #       RUTAS DE ARCHIVOS
 # ============================
 
+# Dataset clínico encriptado (solo lectura)
 ENC_CASES_PATH = "data/cliberto_qa_evalset_anon_992.enc"
-ENC_USERS_PATH = "data/usuarios.enc"
-ENC_ANNOTATIONS_PATH = "data/anotaciones.enc"
 
 
 # ============================
@@ -95,44 +111,6 @@ def decrypt_cases_from_file(password: str):
     return df
 
 
-def decrypt_csv(password: str, path: str):
-    """Desencripta un CSV .enc y lo regresa como DataFrame."""
-    if not os.path.exists(path):
-        return pd.DataFrame()
-
-    with open(path, "rb") as f:
-        raw = f.read()
-
-    salt = raw[:16]
-    token = raw[16:]
-
-    key = derive_key(password, salt)
-    fernet = Fernet(key)
-
-    try:
-        decrypted = fernet.decrypt(token)
-    except InvalidToken:
-        return None
-
-    buffer = io.BytesIO(decrypted)
-    df = pd.read_csv(buffer)
-    return df
-
-
-def encrypt_csv(df: pd.DataFrame, password: str, path: str):
-    """Cifra un DataFrame como CSV en un archivo .enc."""
-    csv_bytes = df.to_csv(index=False).encode("utf-8")
-
-    salt = os.urandom(16)
-    key = derive_key(password, salt)
-    fernet = Fernet(key)
-
-    token = fernet.encrypt(csv_bytes)
-
-    with open(path, "wb") as f:
-        f.write(salt + token)
-
-
 # ============================
 #       CARGA DE DATOS
 # ============================
@@ -146,13 +124,10 @@ def load_cases():
 
 
 def load_users():
-    """Carga usuarios desde usuarios.enc o crea estructura vacía."""
-    pwd = st.session_state["dataset_password"]
-
-    df = decrypt_csv(pwd, ENC_USERS_PATH)
-    if df is None:
-        st.error("No se pudo descifrar usuarios. Contraseña incorrecta.")
-        st.stop()
+    """Carga usuarios desde la base de datos externa."""
+    engine = get_engine()
+    with engine.connect() as conn:
+        df = pd.read_sql("SELECT * FROM usuarios", conn)
 
     if df.empty:
         return pd.DataFrame(columns=[
@@ -165,20 +140,21 @@ def load_users():
     return df
 
 
-def save_users(df_users):
-    """Guarda usuarios encriptados en usuarios.enc."""
-    pwd = st.session_state["dataset_password"]
-    encrypt_csv(df_users, pwd, ENC_USERS_PATH)
+def save_users(df_new_user: pd.DataFrame):
+    """
+    Inserta SOLO los usuarios nuevos en la tabla usuarios.
+    df_new_user debe ser un DataFrame con uno o varios registros nuevos.
+    """
+    engine = get_engine()
+    with engine.begin() as conn:
+        df_new_user.to_sql("usuarios", conn, if_exists="append", index=False)
 
 
 def load_annotations():
-    """Carga anotaciones desde anotaciones.enc o crea estructura vacía."""
-    pwd = st.session_state["dataset_password"]
-
-    df = decrypt_csv(pwd, ENC_ANNOTATIONS_PATH)
-    if df is None:
-        st.error("No se pudo descifrar anotaciones. Contraseña incorrecta.")
-        st.stop()
+    """Carga anotaciones desde la base de datos externa."""
+    engine = get_engine()
+    with engine.connect() as conn:
+        df = pd.read_sql("SELECT * FROM anotaciones", conn)
 
     if df.empty:
         return pd.DataFrame(columns=[
@@ -275,7 +251,7 @@ def main():
         st.session_state["dataset_password_ok"] = True
         st.session_state["cases_df"] = df_test
 
-    # Dataset y CSVs cifrados ya listos
+    # Dataset ya cargado en sesión
     cases = load_cases()
     total_cases = len(cases)
     annotations = load_annotations()
@@ -375,8 +351,10 @@ def main():
                         "institucion": institucion.strip()
                     }])
 
+                    # Actualizar copia en memoria
                     users = pd.concat([users, nuevo], ignore_index=True)
-                    save_users(users)
+                    # Guardar solo el nuevo usuario en la BD
+                    save_users(nuevo)
 
                     nombre_completo = f"{nombre.strip()} {apellido_paterno.strip()} {apellido_materno.strip()}".strip()
 
@@ -565,12 +543,14 @@ def main():
                     ignore_index=True
                 )
 
-                # Guardar anotaciones encriptadas
-                encrypt_csv(
-                    annotations,
-                    st.session_state["dataset_password"],
-                    ENC_ANNOTATIONS_PATH
-                )
+                engine = get_engine()
+                with engine.begin() as conn:
+                    pd.DataFrame([nueva_fila]).to_sql(
+                        "anotaciones",
+                        conn,
+                        if_exists="append",
+                        index=False
+                    )
 
                 st.success("Respuesta registrada.")
 
