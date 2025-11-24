@@ -4,6 +4,7 @@ from datetime import datetime
 import os
 import io
 import base64
+import html  # para escapar texto en la nota clínica
 
 from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
@@ -11,6 +12,7 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.backends import default_backend
 
 import sqlalchemy as sa
+from sqlalchemy import text
 
 # ============================
 #   CONEXIÓN A BASE DE DATOS
@@ -21,10 +23,29 @@ def get_engine():
     """
     Crea y cachea el engine de SQLAlchemy usando la URL
     definida en st.secrets["db"]["url"].
+    Además prueba la conexión y muestra el error real si falla.
     """
-    db_url = st.secrets["db"]["url"]
-    engine = sa.create_engine(db_url)
-    return engine
+    try:
+        db_url = st.secrets["db"]["url"]
+    except Exception as e:
+        st.error(
+            "No se encontró st.secrets['db']['url']. "
+            "Revisa los Secrets en Streamlit Cloud (Settings → Secrets).\n\n"
+            f"Detalle: {e}"
+        )
+        st.stop()
+
+    try:
+        engine = sa.create_engine(db_url)
+
+        # Probar conexión inmediatamente para obtener mensaje claro
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+
+        return engine
+    except Exception as e:
+        st.error(f"Error al conectar a la base de datos:\n\n{e}")
+        st.stop()
 
 
 # ============================
@@ -126,8 +147,16 @@ def load_cases():
 def load_users():
     """Carga usuarios desde la base de datos externa."""
     engine = get_engine()
-    with engine.connect() as conn:
-        df = pd.read_sql("SELECT * FROM usuarios", conn)
+    try:
+        with engine.connect() as conn:
+            df = pd.read_sql("SELECT * FROM usuarios", conn)
+    except Exception as e:
+        st.error(
+            "Error al leer la tabla 'usuarios' desde la base de datos.\n\n"
+            "Verifica que la tabla exista y que el usuario tenga permisos.\n\n"
+            f"Detalle: {e}"
+        )
+        st.stop()
 
     if df.empty:
         return pd.DataFrame(columns=[
@@ -146,15 +175,31 @@ def save_users(df_new_user: pd.DataFrame):
     df_new_user debe ser un DataFrame con uno o varios registros nuevos.
     """
     engine = get_engine()
-    with engine.begin() as conn:
-        df_new_user.to_sql("usuarios", conn, if_exists="append", index=False)
+    try:
+        with engine.begin() as conn:
+            df_new_user.to_sql("usuarios", conn, if_exists="append", index=False)
+    except Exception as e:
+        st.error(
+            "Error al guardar un nuevo usuario en la base de datos.\n\n"
+            "Verifica que la tabla 'usuarios' exista y tenga las columnas correctas.\n\n"
+            f"Detalle: {e}"
+        )
+        st.stop()
 
 
 def load_annotations():
     """Carga anotaciones desde la base de datos externa."""
     engine = get_engine()
-    with engine.connect() as conn:
-        df = pd.read_sql("SELECT * FROM anotaciones", conn)
+    try:
+        with engine.connect() as conn:
+            df = pd.read_sql("SELECT * FROM anotaciones", conn)
+    except Exception as e:
+        st.error(
+            "Error al leer la tabla 'anotaciones' desde la base de datos.\n\n"
+            "Verifica que la tabla exista y que el usuario tenga permisos.\n\n"
+            f"Detalle: {e}"
+        )
+        st.stop()
 
     if df.empty:
         return pd.DataFrame(columns=[
@@ -173,24 +218,35 @@ def load_annotations():
 def highlight_span(text, start, end):
     """
     Resalta el span [start:end] en el texto con <mark>.
-    Si no hay índices válidos, regresa el texto tal cual.
+    Escapa HTML para no romper el frontend.
+    Si no hay índices válidos, regresa el texto escapado tal cual.
     """
     try:
         if pd.isna(start) or pd.isna(end):
-            return text
+            return html.escape(text)
+
         start = int(start)
         end = int(end)
         if start < 0 or end > len(text) or start >= end:
-            return text
+            return html.escape(text)
+
+        before = text[:start]
+        middle = text[start:end]
+        after = text[end:]
+
+        before_esc = html.escape(before)
+        middle_esc = html.escape(middle)
+        after_esc = html.escape(after)
+
         return (
-            text[:start]
+            before_esc
             + "<mark style='background-color: #fff3b0;'>"
-            + text[start:end]
+            + middle_esc
             + "</mark>"
-            + text[end:]
+            + after_esc
         )
     except Exception:
-        return text
+        return html.escape(text)
 
 
 def get_user_stats(doctor_id, annotations, total_cases):
@@ -544,13 +600,21 @@ def main():
                 )
 
                 engine = get_engine()
-                with engine.begin() as conn:
-                    pd.DataFrame([nueva_fila]).to_sql(
-                        "anotaciones",
-                        conn,
-                        if_exists="append",
-                        index=False
+                try:
+                    with engine.begin() as conn:
+                        pd.DataFrame([nueva_fila]).to_sql(
+                            "anotaciones",
+                            conn,
+                            if_exists="append",
+                            index=False
+                        )
+                except Exception as e:
+                    st.error(
+                        "Error al guardar la anotación en la base de datos.\n\n"
+                        "Verifica que la tabla 'anotaciones' exista y tenga las columnas correctas.\n\n"
+                        f"Detalle: {e}"
                     )
+                    st.stop()
 
                 st.success("Respuesta registrada.")
 
