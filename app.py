@@ -578,7 +578,8 @@ def main():
             )
             comentarios = st.text_area(
                 "Comentarios adicionales (opcional)",
-                placeholder="Ejemplo: El diagnóstico correcto es..."
+                placeholder="Ejemplo: El diagnóstico correcto es...",
+                key="comentarios_input"
             )
 
             guardar = st.form_submit_button("Guardar y pasar al siguiente caso")
@@ -617,6 +618,9 @@ def main():
                     st.stop()
 
                 st.success("Respuesta registrada.")
+
+                # 🔥 limpiar comentarios
+                st.session_state["comentarios_input"] = ""
 
                 if idx < total_cases - 1:
                     st.session_state["case_idx"] = idx + 1
