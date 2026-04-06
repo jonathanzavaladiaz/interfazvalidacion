@@ -573,14 +573,16 @@ def main():
         
         if st.session_state["clear_comment"]:
             st.session_state["comentarios_input"] = ""
+            st.session_state["correcta_input"] = "Correcta"  # 👈 aquí está el truco
             st.session_state["clear_comment"] = False
 
         with st.form("annotation_form"):
             correcta = st.radio(
                 "¿La respuesta del modelo es correcta?",
                 options=["Correcta", "Incorrecta"],
-                index=0,
-                horizontal=True
+                index=0, 
+                horizontal=True,
+                key="correcta_input"
             )
             comentarios = st.text_area(
                 "Comentarios adicionales (opcional)",
