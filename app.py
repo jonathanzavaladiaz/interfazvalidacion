@@ -568,12 +568,15 @@ def main():
         st.markdown(f"**Dificultad estimada (EM/F1):** {dificultad}")
 
         st.markdown("---")
+        if "correcta_input" not in st.session_state:
+            st.session_state["correcta_input"] = "Correcta"
+    
         if "clear_comment" not in st.session_state:
             st.session_state["clear_comment"] = False
         
         if st.session_state["clear_comment"]:
             st.session_state["comentarios_input"] = ""
-            st.session_state["correcta_input"] = "Correcta"  # 👈 aquí está el truco
+            st.session_state["correcta_input"] = "Correcta" 
             st.session_state["clear_comment"] = False
 
         with st.form("annotation_form"):
@@ -598,7 +601,7 @@ def main():
                     "case_id": case["case_id"],
                     "pregunta": case["pregunta"],
                     "respuesta_modelo": case["respuesta_modelo"],
-                    "correcta": 1 if correcta == "Correcta" else 0,
+                    "correcta": 1 if st.session_state["correcta_input"] == "Correcta" else 0,
                     "comentarios": comentarios,
                     "timestamp": datetime.now().isoformat()
                 }
