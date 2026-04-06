@@ -568,6 +568,12 @@ def main():
         st.markdown(f"**Dificultad estimada (EM/F1):** {dificultad}")
 
         st.markdown("---")
+        if "clear_comment" not in st.session_state:
+            st.session_state["clear_comment"] = False
+        
+        if st.session_state["clear_comment"]:
+            st.session_state["comentarios_input"] = ""
+            st.session_state["clear_comment"] = False
 
         with st.form("annotation_form"):
             correcta = st.radio(
@@ -620,7 +626,7 @@ def main():
                 st.success("Respuesta registrada.")
 
                 # 🔥 limpiar comentarios
-                st.session_state["comentarios_input"] = ""
+                st.session_state["clear_comment"] = True
 
                 if idx < total_cases - 1:
                     st.session_state["case_idx"] = idx + 1
