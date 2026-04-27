@@ -528,8 +528,22 @@ def main():
     idx = st.session_state["case_idx"]
 
     st.sidebar.markdown("---")
+    
     st.sidebar.write(f"Caso actual: **{idx + 1} / {total_cases}**")
-
+    # 🔢 Navegación directa por número
+    nuevo_idx = st.sidebar.number_input(
+        "Ir a la pregunta #",
+        min_value=1,
+        max_value=total_cases,
+        value=idx + 1,
+        step=1
+    )
+    
+    if nuevo_idx != idx + 1:
+        st.session_state["case_idx"] = int(nuevo_idx) - 1
+        st.rerun()
+    
+    # 🔁 Navegación clásica (porque hay gente que ama las flechitas)
     nav_col1, nav_col2 = st.sidebar.columns(2)
     with nav_col1:
         if st.button("⬅️ Anterior", use_container_width=True):
@@ -539,6 +553,7 @@ def main():
         if st.button("Siguiente ➡️", use_container_width=True):
             st.session_state["case_idx"] = min(total_cases - 1, idx + 1)
             st.rerun()
+  
 
     case = cases.iloc[idx]
 
