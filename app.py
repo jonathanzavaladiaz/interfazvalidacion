@@ -520,7 +520,10 @@ def main():
                     st.session_state["finished"] = False
 
                     last_idx = load_user_progress(doctor_id)
-                    st.session_state["case_idx"] = last_idx
+                    if last_idx == 993:
+                        st.session_state["case_idx"] = 0
+                    else:
+                        st.session_state["case_idx"] = last_idx
                     st.rerun()
 
             return
@@ -565,7 +568,11 @@ def main():
             if st.button("🔄 Volver a la revisión"):
                 st.session_state["finished"] = False
                 last_idx = load_user_progress(doctor_id)
-                st.session_state["case_idx"] = last_idx
+                 if last_idx == 993:
+                     st.session_state["case_idx"] = 0
+                 else:
+                     st.session_state["case_idx"] = last_idx
+                
                 st.rerun()
 
         with col_b:
