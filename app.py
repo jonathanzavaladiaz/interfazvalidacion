@@ -210,6 +210,65 @@ def load_annotations():
 
     return df
 
+def load_user_progress(doctor_id):
+    """Carga el último case_idx guardado del usuario."""
+    engine = get_engine()
+
+    try:
+        with engine.connect() as conn:
+
+            query = text("""
+                SELECT case_idx
+                FROM progreso_usuario
+                WHERE doctor_id = :doctor_id
+            """)
+
+            result = conn.execute(
+                query,
+                {"doctor_id": doctor_id}
+            ).fetchone()
+
+            if result:
+                return int(result[0])
+
+    except Exception as e:
+        st.error(f"Error cargando progreso: {e}")
+
+    return 0
+
+def save_user_progress(doctor_id, case_idx):
+    """Guarda el último case_idx confirmado."""
+    engine = get_engine()
+
+    try:
+        with engine.begin() as conn:
+
+            query = text("""
+                INSERT INTO progreso_usuario (
+                    doctor_id,
+                    case_idx,
+                    updated_at
+                )
+                VALUES (
+                    :doctor_id,
+                    :case_idx,
+                    NOW()
+                )
+
+                ON CONFLICT (doctor_id)
+                DO UPDATE SET
+                    case_idx = EXCLUDED.case_idx,
+                    updated_at = NOW()
+            """)
+
+            conn.execute(query, {
+                "doctor_id": doctor_id,
+                "case_idx": case_idx
+            })
+
+    except Exception as e:
+        st.error(f"Error guardando progreso: {e}")
+
 
 # ============================
 #          UTILIDADES
@@ -460,8 +519,8 @@ def main():
                     st.session_state["doctor_nombre"] = nombre_completo
                     st.session_state["finished"] = False
 
-                    next_idx = calcular_siguiente_caso(doctor_id, cases, annotations)
-                    st.session_state["case_idx"] = next_idx
+                    last_idx = load_user_progress(doctor_id)
+                    st.session_state["case_idx"] = last_idx
                     st.rerun()
 
             return
@@ -505,8 +564,8 @@ def main():
         with col_a:
             if st.button("🔄 Volver a la revisión"):
                 st.session_state["finished"] = False
-                next_idx = calcular_siguiente_caso(doctor_id, cases, annotations)
-                st.session_state["case_idx"] = next_idx
+                last_idx = load_user_progress(doctor_id)
+                st.session_state["case_idx"] = last_idx
                 st.rerun()
 
         with col_b:
@@ -543,7 +602,7 @@ def main():
         st.session_state["case_idx"] = int(nuevo_idx) - 1
         st.rerun()
     
-    # 🔁 Navegación clásica (porque hay gente que ama las flechitas)
+    # 🔁 Navegación clásica
     nav_col1, nav_col2 = st.sidebar.columns(2)
     with nav_col1:
         if st.button("⬅️ Anterior", use_container_width=True):
@@ -649,7 +708,14 @@ def main():
                 st.session_state["clear_comment"] = True
 
                 if idx < total_cases - 1:
-                    st.session_state["case_idx"] = idx + 1
+                    nuevo_case_idx = idx + 1
+                    # guardar progreso confirmado
+                    save_user_progress(
+                        doctor_id,
+                        nuevo_case_idx
+                    )
+                    st.session_state["case_idx"] = nuevo_case_idx
+              
                 st.rerun()
 
 
